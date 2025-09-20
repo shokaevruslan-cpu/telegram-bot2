@@ -1,3 +1,5 @@
+python_version=="3.11.*"
 python-telegram-bot==20.7
 SQLAlchemy==2.0.32
 psycopg2-binary==2.9.9
+
