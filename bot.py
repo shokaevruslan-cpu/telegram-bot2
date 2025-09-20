@@ -1,80 +1,70 @@
 import os
-from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
-from db import log_mood, get_mood_history, save_journal_entry, get_user_settings, set_user_notify
+from sqlalchemy import create_engine, Table, Column, Integer, String, MetaData, Text
+from sqlalchemy.sql import select, insert, update
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+DATABASE_URL = os.getenv("DATABASE_URL")
 
-# --- команды ---
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "Здравствуйте! Я ваш психолог-бот.\n"
-        "Помогу вести дневник настроения и поддерживать вас.\n"
-        "Введите /help для меню."
-    )
+# Создаём подключение к базе
+engine = create_engine(DATABASE_URL, connect_args={"sslmode": "require"})
+metadata = MetaData()
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    reply_keyboard = [
-        ["Мой дневник", "Записать настроение"],
-        ["История настроений", "Добавить запись"],
-        ["Настройки", "Поддержка"]
-    ]
-    await update.message.reply_text(
-        "Выберите раздел:",
-        reply_markup=ReplyKeyboardMarkup(reply_keyboard, resize_keyboard=True)
-    )
+# Таблица настроения
+mood_log = Table(
+    "mood_log",
+    metadata,
+    Column("id", Integer, primary_key=True),
+    Column("timestamp", String),
+    Column("mood", Integer),
+)
 
-async def record_mood(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Введите ваше настроение (от 1 до 10):")
-    context.user_data["awaiting_mood"] = True
+# Таблица дневника
+journal = Table(
+    "journal",
+    metadata,
+    Column("id", Integer, primary_key=True),
+    Column("timestamp", String),
+    Column("entry", Text),
+)
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
-    user_id = update.effective_user.id
+# Таблица настроек пользователя
+user_settings = Table(
+    "user_settings",
+    metadata,
+    Column("id", Integer, primary_key=True),
+    Column("notify", String),
+)
 
-    if context.user_data.get("awaiting_mood"):
-        try:
-            mood_value = int(text)
-            if 1 <= mood_value <= 10:
-                log_mood(mood_value)
-                await update.message.reply_text("Ваше настроение сохранено!", reply_markup=ReplyKeyboardRemove())
-            else:
-                await update.message.reply_text("Введите число от 1 до 10.")
-        except ValueError:
-            await update.message.reply_text("Пожалуйста, введите число.")
-        context.user_data["awaiting_mood"] = False
-        return
+# Создаём таблицы (если их ещё нет)
+metadata.create_all(engine)
 
-    if text == "История настроений":
-        history = get_mood_history()
-        if not history:
-            await update.message.reply_text("История пуста.")
+
+# 📌 Функции работы с БД
+def log_mood(timestamp, mood_value):
+    with engine.begin() as conn:
+        conn.execute(insert(mood_log).values(timestamp=timestamp, mood=mood_value))
+
+
+def get_mood_history():
+    with engine.begin() as conn:
+        result = conn.execute(select(mood_log)).fetchall()
+        return result
+
+
+def save_journal_entry(timestamp, entry_text):
+    with engine.begin() as conn:
+        conn.execute(insert(journal).values(timestamp=timestamp, entry=entry_text))
+
+
+def get_user_settings():
+    with engine.begin() as conn:
+        result = conn.execute(select(user_settings)).fetchone()
+        return result
+
+
+def set_user_notify(value: str):
+    with engine.begin() as conn:
+        result = conn.execute(select(user_settings)).fetchone()
+        if result:
+            conn.execute(update(user_settings).values(notify=value))
         else:
-            msg = "История:\n" + "\n".join([f"{row.timestamp}: {row.mood}" for row in history])
-            await update.message.reply_text(msg)
-
-    elif text == "Добавить запись":
-        await update.message.reply_text("Напишите ваш дневниковый текст:")
-        context.user_data["adding_journal"] = True
-    elif context.user_data.get("adding_journal"):
-        save_journal_entry(text)
-        await update.message.reply_text("Запись сохранена!")
-        context.user_data["adding_journal"] = False
-    elif text == "Настройки":
-        notify = get_user_settings(user_id)
-        await update.message.reply_text(f"Уведомления {'включены' if notify else 'выключены'}")
-    elif text == "Поддержка":
-        await update.message.reply_text("Если вам нужна помощь, обратитесь к специалисту или друзьям.")
-    else:
-        await update.message.reply_text("Используйте меню или команду /help.")
-
-# --- запуск ---
-def main():
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    app.run_polling()
-
-if __name__ == "__main__":
-    main()
+            conn.execute(insert(user_settings).values(notify=value))
